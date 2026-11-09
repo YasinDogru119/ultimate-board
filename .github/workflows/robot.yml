@@ -25,7 +25,7 @@ jobs:
       - name: Önceki durumu al
         run: |
           mkdir -p out
-          git fetch --depth=1 origin gh-pages 2>/dev/null && git show origin/gh-pages:state.enc > out/state.enc || echo "ilk çalışma: durum yok"
+          git fetch --depth=1 origin gh-pages 2>/dev/null && git show origin/gh-pages:state.enc > out/state.enc || { rm -f out/state.enc; echo "ilk çalışma: durum yok"; }
       - name: Listeleri hazırla
         env:
           SA_JSON: ${{ secrets.SA_JSON }}

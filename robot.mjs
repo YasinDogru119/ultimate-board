@@ -70,7 +70,7 @@ const shown = (st, uid, name) => (st.hidden[pidOf(uid)] || badName(name) || !nam
 const keyOf = () => createHash('sha256').update(process.env.STATE_KEY || 'yerel-deneme').digest();
 function loadState() {
   const empty = { v: 1, lastT: '1970-01-01T00:00:00Z', lastRT: '1970-01-01T00:00:00Z', week: null, season: null, players: {}, reports: {}, hidden: {}, flag: {}, awards: {}, champs: [], archive: {} };
-  if (!existsSync(STATE)) return empty;
+  if (!existsSync(STATE) || readFileSync(STATE).length < 28) return empty;   // dosya yok ya da boş (ilk çalışma / sıfırlandı)
   try {
     const b = readFileSync(STATE), d = createDecipheriv('aes-256-gcm', keyOf(), b.subarray(0, 12));
     d.setAuthTag(b.subarray(12, 28));
