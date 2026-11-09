@@ -34,6 +34,11 @@ const badName = n => {
   return BAD.some(b => (b.length > 4 ? glued.includes(b) : words.some(w => w.startsWith(b))));
 };
 const REPORTS_TO_HIDE = 3;
+const REPORTER_MIN_PUZZLES = 3;   // bildirim yalnızca en az 3 yapboz bitirmiş oyuncudan sayılır (sahte hesapla isim gizletme olmasın)
+// telefondaki isim kuralıyla aynı (src/leaderboard/store.ts SYMBOL) + görünmez/yön değiştiren karakterler: telefonu atlayıp
+// doğrudan sunucuya yazan biri bunlarla taklit isim yapmasın → böyle isim "Player XXXX" görünür
+const SYMBOL = /[\u0000-\u001f!-\-/:-@[-^`{-~\u007f-\u00bf\u2000-\u2bff\ud800-\udfff\ufe00-\ufe0f]/;
+const nameOk = n => { const v = String(n).trim(); return v.length >= 3 && v.length <= 16 && !SYMBOL.test(v) && !/\s{2}/.test(v); };
 
 // ---- hile kontrolü (9 Kasım 2026, kullanıcı: "Günün Yapbozu 2 katını hileden sayma")
 // İki gönderim arasında kazanılan puan, gerçek oyunla mümkün olandan fazlaysa oyuncu O SEZON listelerden ve kupalardan çıkar.
@@ -55,7 +60,7 @@ function suspicious(prev, cur, since) {
 }
 const cheat = (st, uid) => st.flag[uid] === st.season;
 const pidOf = uid => uid.slice(0, 12);
-const shown = (st, uid, name) => (st.hidden[pidOf(uid)] || badName(name) ? 'Player ' + pidOf(uid).slice(0, 4).toUpperCase() : name);
+const shown = (st, uid, name) => (st.hidden[pidOf(uid)] || badName(name) || !nameOk(name) ? 'Player ' + pidOf(uid).slice(0, 4).toUpperCase() : name);
 
 // ---- şifreli durum (AES-256-GCM). Açık depoda durduğu için şifreli: içinde bütün oyuncular var.
 const keyOf = () => createHash('sha256').update(process.env.STATE_KEY || 'yerel-deneme').digest();
@@ -182,7 +187,7 @@ async function main() {
     for (const d of ps) {
       const f = d.f;
       if (typeof f.n !== 'string' || typeof f.w !== 'string') continue;
-      const cur = { n: f.n.slice(0, 16), c: String(f.c ?? '').slice(0, 2), w: f.w, wp: f.wp | 0, s: f.s, sp: f.sp | 0, lg: f.lg | 0, pz: f.pz | 0, t: Date.parse(f.t) };
+      const cur = { n: f.n.slice(0, 16), c: /^[A-Z]{2}$/.test(f.c) ? f.c : 'UN', w: f.w, wp: f.wp | 0, s: f.s, sp: f.sp | 0, lg: f.lg | 0, pz: f.pz | 0, t: Date.parse(f.t) };
       const why = suspicious(st.players[d.id], cur, seasonStart(cur.t));
       if (why && st.flag[d.id] !== cur.s) { st.flag[d.id] = cur.s; flagged++; console.log('şüpheli', pidOf(d.id), why); }
       st.players[d.id] = cur;
@@ -193,7 +198,8 @@ async function main() {
       const reporter = d.id.split('_')[0], target = String(d.f.x ?? '').slice(0, 12);
       const list = (st.reports[target] ??= []);
       if (!list.includes(reporter)) list.push(reporter);
-      if (list.length >= REPORTS_TO_HIDE) st.hidden[target] = true;
+      const real = list.filter(r => (st.players[r]?.pz ?? 0) >= REPORTER_MIN_PUZZLES).length;
+      if (real >= REPORTS_TO_HIDE) st.hidden[target] = true;
       if (d.f.t > st.lastRT) st.lastRT = d.f.t;
     }
     console.log('değişen oyuncu', ps.length, '· bildirim', rs.length, '· şüpheli', flagged);
