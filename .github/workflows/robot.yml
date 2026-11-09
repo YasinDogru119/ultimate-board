@@ -1,0 +1,43 @@
+# GitHub Actions: "ultimate-board" deposunda .github/workflows/robot.yml olarak durur.
+# Saatte bir robot.mjs çalışır; liste dosyaları ve şifreli durum "gh-pages" dalına TEK kayıt olarak zorla yazılır
+# (geçmiş birikmez → depo büyümez; her saat yeni kayıt ekleseydik 10 bin oyuncuda ayda yüzlerce MB olurdu).
+# GitHub Pages bu dalı telefonlara sunar. Açık (public) depoda Actions dakikaları ücretsizdir.
+# Gizliler (Settings → Secrets → Actions): SA_JSON (hizmet hesabı JSON'u), STATE_KEY (uzun rastgele şifre).
+name: robot
+on:
+  schedule:
+    - cron: '17 * * * *'        # saat başı değil :17'de (GitHub saat başlarında yoğun, gecikir)
+  workflow_dispatch: {}          # Actions sekmesinden elle "Run workflow"
+permissions:
+  contents: write
+concurrency:
+  group: robot
+  cancel-in-progress: false
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Önceki durumu al
+        run: |
+          mkdir -p out
+          git fetch --depth=1 origin gh-pages 2>/dev/null && git show origin/gh-pages:state.enc > out/state.enc || echo "ilk çalışma: durum yok"
+      - name: Listeleri hazırla
+        env:
+          SA_JSON: ${{ secrets.SA_JSON }}
+          STATE_KEY: ${{ secrets.STATE_KEY }}
+        run: node robot.mjs --out out
+      - name: Yayınla (gh-pages, tek kayıt)
+        run: |
+          cd out
+          touch .nojekyll
+          git init -q -b gh-pages
+          git config user.name "board-robot"
+          git config user.email "board-robot@users.noreply.github.com"
+          git add -A
+          git commit -q -m "liste $(date -u +%F' '%H:%M)"
+          git push -q -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" gh-pages
