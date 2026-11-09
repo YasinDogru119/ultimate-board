@@ -6,7 +6,7 @@
 name: robot
 on:
   schedule:
-    - cron: '17 * * * *'        # saat başı değil :17'de (GitHub saat başlarında yoğun, gecikir)
+    - cron: '17 * * * *'        # saat başı değil :17'de (GitHub saat başlarında yoğun, gecikir) · zamanlama yeniden kaydedildi 9 Kasım
   workflow_dispatch: {}          # Actions sekmesinden elle "Run workflow"
 permissions:
   contents: write
