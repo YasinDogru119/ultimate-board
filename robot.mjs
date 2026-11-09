@@ -13,6 +13,8 @@ import { join } from 'node:path';
 const arg = (k, d) => { const i = process.argv.indexOf('--' + k); return i < 0 ? d : process.argv[i + 1] ?? true; };
 const OUT = arg('out', '.');
 const FAKE = arg('fake', null);
+// Dönem kapanışı (kupalar) bitişten bu kadar sonra: geç gelen pazar gecesi puanları da sayılsın (9 Kasım, "son iki saat" hatası)
+const GRACE = +arg('grace', FAKE ? 0 : 12 * 36e5);
 const STATE = join(OUT, 'state.enc');
 const DAY = 864e5;
 
@@ -67,7 +69,7 @@ const shown = (st, uid, name) => (st.hidden[pidOf(uid)] || badName(name) || !nam
 // ---- şifreli durum (AES-256-GCM). Açık depoda durduğu için şifreli: içinde bütün oyuncular var.
 const keyOf = () => createHash('sha256').update(process.env.STATE_KEY || 'yerel-deneme').digest();
 function loadState() {
-  const empty = { v: 1, lastT: '1970-01-01T00:00:00Z', lastRT: '1970-01-01T00:00:00Z', week: null, season: null, players: {}, reports: {}, hidden: {}, flag: {}, awards: {}, champs: [] };
+  const empty = { v: 1, lastT: '1970-01-01T00:00:00Z', lastRT: '1970-01-01T00:00:00Z', week: null, season: null, players: {}, reports: {}, hidden: {}, flag: {}, awards: {}, champs: [], archive: {} };
   if (!existsSync(STATE)) return empty;
   try {
     const b = readFileSync(STATE), d = createDecipheriv('aes-256-gcm', keyOf(), b.subarray(0, 12));
@@ -131,23 +133,51 @@ function fakeNames(n, seed) {
 }
 
 // ---- dönem kapanışı: kupalar ve şampiyonlar
-function closeWeek(st, id) {
-  const top = Object.entries(st.players).filter(([uid, p]) => p.w === id && p.wp > 0 && !cheat(st, uid)).sort((a, b) => b[1].wp - a[1].wp || a[1].t - b[1].t).slice(0, 3);
-  top.forEach(([uid], i) => (st.awards[pidOf(uid)] ??= []).push(['week', id, i + 1]));
-  console.log('hafta kapandı', id, top.map(([u, p]) => p.n + ':' + p.wp).join(', '));
+// ---- dönem arşivi: biten hafta/sezonun her oyuncu için SON puanı. Oyuncu bu arada yeni haftaya geçse de kupadan düşmez;
+// kapanış GRACE kadar bekler, o sürede gelen geç puanlar (telefonun "prev" gönderimi) arşive işlenir.
+const weekStart = (ms = Date.now()) => { const d = new Date(ms); return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - (d.getUTCDay() + 6) % 7); };
+function archive(st, kind, id, s, closeAt) {
+  const pk = kind === 'w' ? 'wp' : 'sp', pts = {};
+  for (const [uid, p] of Object.entries(st.players)) if (p[kind] === id && p[pk] > 0) pts[uid] = [p[pk], p.t];
+  st.archive[id] = { kind, s, closeAt, pts };
+  console.log((kind === 'w' ? 'hafta ' : 'sezon ') + id + ' bitti → arşiv (' + Object.keys(pts).length + ' oyuncu), kapanış ' + new Date(closeAt).toISOString());
 }
-function closeSeason(st, id) {
-  const top = Object.entries(st.players).filter(([uid, p]) => p.s === id && p.sp > 0 && !cheat(st, uid)).sort((a, b) => b[1].sp - a[1].sp || a[1].t - b[1].t).slice(0, 10);
+/** Değişen oyuncu: biten bir döneme ait puan geldiyse arşive işle (en yükseği kalır) */
+function note(st, uid, cur) {
+  for (const [id, pk] of [[cur.w, 'wp'], [cur.s, 'sp']]) {
+    const a = st.archive[id];
+    if (a && (a.kind === 'w') === (pk === 'wp') && cur[pk] > (a.pts[uid]?.[0] ?? 0)) a.pts[uid] = [cur[pk], cur.t];
+  }
+}
+const ranked = (st, a, n) => Object.entries(a.pts).filter(([uid]) => st.flag[uid] !== a.s).sort((x, y) => y[1][0] - x[1][0] || x[1][1] - y[1][1]).slice(0, n);
+function closeWeek(st, id, a) {
+  const top = ranked(st, a, 3);
+  top.forEach(([uid], i) => (st.awards[pidOf(uid)] ??= []).push(['week', id, i + 1]));
+  console.log('hafta kapandı', id, top.map(([u, v]) => (st.players[u]?.n ?? '?') + ':' + v[0]).join(', '));
+}
+function closeSeason(st, id, a) {
+  const top = ranked(st, a, 10);
   top.forEach(([uid], i) => (st.awards[pidOf(uid)] ??= []).push([i === 0 ? 'champ' : i === 1 ? 'second' : i === 2 ? 'third' : 'top10', id, i + 1]));
-  if (top.length) st.champs.unshift({ s: id, top: top.slice(0, 3).map(([uid, p]) => [pidOf(uid), shown(st, uid, p.n), p.c, p.sp]) });
+  if (top.length) st.champs.unshift({ s: id, top: top.slice(0, 3).map(([uid, v]) => [pidOf(uid), shown(st, uid, st.players[uid]?.n ?? ''), st.players[uid]?.c ?? 'UN', v[0]]) });
   console.log('sezon kapandı', id, top.length, 'kupa');
 }
+/** Dönem değiştiyse eskisini arşive al (kapanmadan önce, değişiklikler işlenmeden) */
 function rollover(st, now) {
   const w = weekId(now), s = seasonId(now);
-  if (st.week && st.week !== w) closeWeek(st, st.week);
-  if (st.season && st.season !== s) closeSeason(st, st.season);
+  st.archive ??= {};
+  if (st.week && st.week !== w && !st.archive[st.week]) archive(st, 'w', st.week, st.season, weekStart(now) + GRACE);
+  if (st.season && st.season !== s && !st.archive[st.season]) archive(st, 's', st.season, st.season, seasonStart(now) + GRACE);
   st.week = w; st.season = s;
-  for (const u in st.flag) if (st.flag[u] !== s) delete st.flag[u];   // yeni sezon: herkese temiz sayfa
+}
+/** Süresi dolan arşivleri kapat (kupalar), hile işaretlerini temizle */
+function closeDue(st, now) {
+  for (const [id, a] of Object.entries(st.archive ?? {})) {
+    if (now < a.closeAt) continue;
+    a.kind === 'w' ? closeWeek(st, id, a) : closeSeason(st, id, a);
+    delete st.archive[id];
+  }
+  const keep = new Set([st.season, ...Object.values(st.archive).map(a => a.s)]);
+  for (const u in st.flag) if (!keep.has(st.flag[u])) delete st.flag[u];   // yeni sezon: herkese temiz sayfa (açık arşiv yoksa)
 }
 
 function board(st, kind) {
@@ -171,8 +201,9 @@ async function main() {
     const n = +FAKE || 3000, P = fakeNames(n, 7);
     const prev = t0 - 7 * DAY, prevSeason = Date.UTC(new Date(t0).getUTCFullYear(), new Date(t0).getUTCMonth() < 6 ? -1 : 5, 15);
     st.week = weekId(prev); st.season = seasonId(prevSeason);
-    for (const p of P) st.players[p.uid] = { n: p.name, c: p.c, w: st.week, wp: Math.floor(p.r() ** 3 * 3000), s: st.season, sp: Math.floor(p.r() ** 3 * 40000), lg: Math.floor(p.r() * 6), pz: Math.floor(p.r() * 900), t: t0 - 3 * DAY };
+    for (const p of P) st.players[p.uid] = { n: p.name, c: p.c, w: st.week, wp: Math.floor(p.r() ** 3 * 3000), s: st.season, sp: Math.floor(p.r() ** 3 * 40000), lg: Math.floor(p.r() * 9), pz: Math.floor(p.r() * 900), t: t0 - 3 * DAY };
     rollover(st, t0);
+    closeDue(st, t0);
     for (const p of P) if (p.r() < 0.8) Object.assign(st.players[p.uid], { w: st.week, wp: Math.floor(p.r() ** 4 * 3200), s: st.season, sp: Math.floor(p.r() ** 3 * 9000), t: t0 - Math.floor(p.r() * DAY) });
     // hile denemesi: önceki kayıt 1 saat önce, şimdi +5000 puan / 2 yapboz → şüpheli; Günün Yapbozu 2 katı (+100 / 1 yapboz) → temiz
     for (const [uid, gain, pz] of [['fake-cheater-000000000000', 5000, 2], ['fake-daily2x-000000000000', 100, 1]]) {
@@ -184,6 +215,7 @@ async function main() {
     }
     st.players['fake-bad-name-000000000000'] = { n: 'sikko', c: 'TR', w: st.week, wp: 2900, s: st.season, sp: 3000, lg: 2, pz: 10, t: t0 };   // süzgeç denemesi
   } else {
+    rollover(st, t0);                                   // önce: biten dönem arşive (oyuncular yeni döneme geçmeden)
     const ps = await changed('players', st.lastT);
     let flagged = 0;
     for (const d of ps) {
@@ -193,6 +225,7 @@ async function main() {
       const why = suspicious(st.players[d.id], cur, seasonStart(cur.t));
       if (why && st.flag[d.id] !== cur.s) { st.flag[d.id] = cur.s; flagged++; console.log('şüpheli', pidOf(d.id), why); }
       st.players[d.id] = cur;
+      note(st, d.id, cur);                              // biten döneme geç gelen puan → arşiv
       if (f.t > st.lastT) st.lastT = f.t;
     }
     const rs = await changed('reports', st.lastRT);
@@ -205,7 +238,7 @@ async function main() {
       if (d.f.t > st.lastRT) st.lastRT = d.f.t;
     }
     console.log('değişen oyuncu', ps.length, '· bildirim', rs.length, '· şüpheli', flagged);
-    rollover(st, t0);
+    closeDue(st, t0);
   }
   const files = { 'week.json': board(st, 'week'), 'season.json': board(st, 'season'), 'awards.json': st.awards, 'champs.json': st.champs };
   for (const [f, v] of Object.entries(files)) writeFileSync(join(OUT, f), JSON.stringify(v));
