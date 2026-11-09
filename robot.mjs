@@ -22,6 +22,8 @@ const weekId = (ms = Date.now()) => {
   const thu = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - day + 3), y = new Date(thu).getUTCFullYear();
   return y + '-' + (1 + Math.floor((thu - Date.UTC(y, 0, 1)) / DAY / 7));
 };
+/** Sezonun başlangıcı (1 Ocak / 1 Temmuz, UTC) — ilk kez görülen oyuncunun sezon puanı bu tarihten beri birikmiş olabilir */
+const seasonStart = (ms = Date.now()) => { const d = new Date(ms); return Date.UTC(d.getUTCFullYear(), d.getUTCMonth() < 6 ? 0 : 6, 1); };
 const seasonId = (ms = Date.now()) => { const d = new Date(ms); return d.getUTCFullYear() + '-' + (d.getUTCMonth() < 6 ? 1 : 2); };
 
 // ---- isim süzgeci: telefondaki BAD listesiyle aynı (src/leaderboard/store.ts) + bildirimle gizlenenler
@@ -32,13 +34,33 @@ const badName = n => {
   return BAD.some(b => (b.length > 4 ? glued.includes(b) : words.some(w => w.startsWith(b))));
 };
 const REPORTS_TO_HIDE = 3;
+
+// ---- hile kontrolü (9 Kasım 2026, kullanıcı: "Günün Yapbozu 2 katını hileden sayma")
+// İki gönderim arasında kazanılan puan, gerçek oyunla mümkün olandan fazlaysa oyuncu O SEZON listelerden ve kupalardan çıkar.
+// Telefonuna bir şey olmaz (puanı yine kendi telefonunda görünür). Sınırlar bilerek cömert: dürüst oyuncu asla takılmasın.
+const PER_PUZZLE = 50;       // en çok: 100 parça 25 puan, reklamla 2 katı 50
+const DAILY_EXTRA = 50;      // Günün Yapbozu: 2 kat → reklamla en çok 100; normal sınırın üstündeki 50 her gün serbest
+const PER_MIN = 15;          // dakikada ortalama 15 puandan fazlası insanüstü (çok hızlı oyuncu ~8)
+const BURST = 300;           // anlık sıçrama payı (aynı Firestore kuralındaki gibi)
+/** Önceki kayıt → yeni kayıt arasında kazanç makul mü; değilse sebep metni */
+function suspicious(prev, cur, since) {
+  const gain = prev && prev.s === cur.s ? cur.sp - prev.sp : cur.sp;
+  if (gain <= 0) return null;
+  const mins = Math.max(1, ((cur.t || Date.now()) - (prev ? prev.t : since)) / 6e4);
+  const days = Math.ceil(mins / 1440) + 1;
+  const puzzles = prev ? Math.max(0, cur.pz - prev.pz) : cur.pz;
+  if (gain > PER_PUZZLE * puzzles + DAILY_EXTRA * days + 20) return `yapboz başına fazla: +${gain} puan / ${puzzles} yapboz`;
+  if (gain > BURST + PER_MIN * mins + DAILY_EXTRA * days) return `çok hızlı: +${gain} puan / ${Math.round(mins)} dk`;
+  return null;
+}
+const cheat = (st, uid) => st.flag[uid] === st.season;
 const pidOf = uid => uid.slice(0, 12);
 const shown = (st, uid, name) => (st.hidden[pidOf(uid)] || badName(name) ? 'Player ' + pidOf(uid).slice(0, 4).toUpperCase() : name);
 
 // ---- şifreli durum (AES-256-GCM). Açık depoda durduğu için şifreli: içinde bütün oyuncular var.
 const keyOf = () => createHash('sha256').update(process.env.STATE_KEY || 'yerel-deneme').digest();
 function loadState() {
-  const empty = { v: 1, lastT: '1970-01-01T00:00:00Z', lastRT: '1970-01-01T00:00:00Z', week: null, season: null, players: {}, reports: {}, hidden: {}, awards: {}, champs: [] };
+  const empty = { v: 1, lastT: '1970-01-01T00:00:00Z', lastRT: '1970-01-01T00:00:00Z', week: null, season: null, players: {}, reports: {}, hidden: {}, flag: {}, awards: {}, champs: [] };
   if (!existsSync(STATE)) return empty;
   try {
     const b = readFileSync(STATE), d = createDecipheriv('aes-256-gcm', keyOf(), b.subarray(0, 12));
@@ -103,12 +125,12 @@ function fakeNames(n, seed) {
 
 // ---- dönem kapanışı: kupalar ve şampiyonlar
 function closeWeek(st, id) {
-  const top = Object.entries(st.players).filter(([, p]) => p.w === id && p.wp > 0).sort((a, b) => b[1].wp - a[1].wp || a[1].t - b[1].t).slice(0, 3);
+  const top = Object.entries(st.players).filter(([uid, p]) => p.w === id && p.wp > 0 && !cheat(st, uid)).sort((a, b) => b[1].wp - a[1].wp || a[1].t - b[1].t).slice(0, 3);
   top.forEach(([uid], i) => (st.awards[pidOf(uid)] ??= []).push(['week', id, i + 1]));
   console.log('hafta kapandı', id, top.map(([u, p]) => p.n + ':' + p.wp).join(', '));
 }
 function closeSeason(st, id) {
-  const top = Object.entries(st.players).filter(([, p]) => p.s === id && p.sp > 0).sort((a, b) => b[1].sp - a[1].sp || a[1].t - b[1].t).slice(0, 10);
+  const top = Object.entries(st.players).filter(([uid, p]) => p.s === id && p.sp > 0 && !cheat(st, uid)).sort((a, b) => b[1].sp - a[1].sp || a[1].t - b[1].t).slice(0, 10);
   top.forEach(([uid], i) => (st.awards[pidOf(uid)] ??= []).push([i === 0 ? 'champ' : i === 1 ? 'second' : i === 2 ? 'third' : 'top10', id, i + 1]));
   if (top.length) st.champs.unshift({ s: id, top: top.slice(0, 3).map(([uid, p]) => [pidOf(uid), shown(st, uid, p.n), p.c, p.sp]) });
   console.log('sezon kapandı', id, top.length, 'kupa');
@@ -118,11 +140,12 @@ function rollover(st, now) {
   if (st.week && st.week !== w) closeWeek(st, st.week);
   if (st.season && st.season !== s) closeSeason(st, st.season);
   st.week = w; st.season = s;
+  for (const u in st.flag) if (st.flag[u] !== s) delete st.flag[u];   // yeni sezon: herkese temiz sayfa
 }
 
 function board(st, kind) {
   const id = kind === 'week' ? st.week : st.season, pk = kind === 'week' ? 'wp' : 'sp', ik = kind === 'week' ? 'w' : 's';
-  const all = Object.entries(st.players).filter(([, p]) => p[ik] === id && p[pk] > 0).sort((a, b) => b[1][pk] - a[1][pk] || a[1].t - b[1].t);
+  const all = Object.entries(st.players).filter(([uid, p]) => p[ik] === id && p[pk] > 0 && !cheat(st, uid)).sort((a, b) => b[1][pk] - a[1][pk] || a[1].t - b[1].t);
   const h = new Map();
   for (const [, p] of all) h.set(p[pk], (h.get(p[pk]) ?? 0) + 1);
   return {
@@ -144,13 +167,25 @@ async function main() {
     for (const p of P) st.players[p.uid] = { n: p.name, c: p.c, w: st.week, wp: Math.floor(p.r() ** 3 * 3000), s: st.season, sp: Math.floor(p.r() ** 3 * 40000), lg: Math.floor(p.r() * 6), pz: Math.floor(p.r() * 900), t: t0 - 3 * DAY };
     rollover(st, t0);
     for (const p of P) if (p.r() < 0.8) Object.assign(st.players[p.uid], { w: st.week, wp: Math.floor(p.r() ** 4 * 3200), s: st.season, sp: Math.floor(p.r() ** 3 * 9000), t: t0 - Math.floor(p.r() * DAY) });
+    // hile denemesi: önceki kayıt 1 saat önce, şimdi +5000 puan / 2 yapboz → şüpheli; Günün Yapbozu 2 katı (+100 / 1 yapboz) → temiz
+    for (const [uid, gain, pz] of [['fake-cheater-000000000000', 5000, 2], ['fake-daily2x-000000000000', 100, 1]]) {
+      const prev = { n: uid.slice(5, 12), c: 'US', w: st.week, wp: 10, s: st.season, sp: 10, lg: 0, pz: 5, t: t0 - 36e5 };
+      const cur = { ...prev, wp: 10 + gain, sp: 10 + gain, pz: 5 + pz, t: t0 };
+      const why = suspicious(prev, cur, seasonStart(t0));
+      if (why) { st.flag[uid] = cur.s; console.log('şüpheli', pidOf(uid), why); } else console.log('temiz', pidOf(uid));
+      st.players[uid] = cur;
+    }
     st.players['fake-bad-name-000000000000'] = { n: 'sikko', c: 'TR', w: st.week, wp: 2900, s: st.season, sp: 3000, lg: 2, pz: 10, t: t0 };   // süzgeç denemesi
   } else {
     const ps = await changed('players', st.lastT);
+    let flagged = 0;
     for (const d of ps) {
       const f = d.f;
       if (typeof f.n !== 'string' || typeof f.w !== 'string') continue;
-      st.players[d.id] = { n: f.n.slice(0, 16), c: String(f.c ?? '').slice(0, 2), w: f.w, wp: f.wp | 0, s: f.s, sp: f.sp | 0, lg: f.lg | 0, pz: f.pz | 0, t: Date.parse(f.t) };
+      const cur = { n: f.n.slice(0, 16), c: String(f.c ?? '').slice(0, 2), w: f.w, wp: f.wp | 0, s: f.s, sp: f.sp | 0, lg: f.lg | 0, pz: f.pz | 0, t: Date.parse(f.t) };
+      const why = suspicious(st.players[d.id], cur, seasonStart(cur.t));
+      if (why && st.flag[d.id] !== cur.s) { st.flag[d.id] = cur.s; flagged++; console.log('şüpheli', pidOf(d.id), why); }
+      st.players[d.id] = cur;
       if (f.t > st.lastT) st.lastT = f.t;
     }
     const rs = await changed('reports', st.lastRT);
@@ -161,7 +196,7 @@ async function main() {
       if (list.length >= REPORTS_TO_HIDE) st.hidden[target] = true;
       if (d.f.t > st.lastRT) st.lastRT = d.f.t;
     }
-    console.log('değişen oyuncu', ps.length, '· bildirim', rs.length);
+    console.log('değişen oyuncu', ps.length, '· bildirim', rs.length, '· şüpheli', flagged);
     rollover(st, t0);
   }
   const files = { 'week.json': board(st, 'week'), 'season.json': board(st, 'season'), 'awards.json': st.awards, 'champs.json': st.champs };
