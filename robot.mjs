@@ -54,8 +54,10 @@ function suspicious(prev, cur, since) {
   const mins = Math.max(1, ((cur.t || Date.now()) - (prev ? prev.t : since)) / 6e4);
   const days = Math.ceil(mins / 1440) + 1;
   const puzzles = prev ? Math.max(0, cur.pz - prev.pz) : cur.pz;
-  if (gain > PER_PUZZLE * puzzles + DAILY_EXTRA * days + 20) return `yapboz başına fazla: +${gain} puan / ${puzzles} yapboz`;
-  if (gain > BURST + PER_MIN * mins + DAILY_EXTRA * days) return `çok hızlı: +${gain} puan / ${Math.round(mins)} dk`;
+  // Günün Yapbozu da bir yapboz: ek pay en çok bitirilen yapboz sayısı kadar (9 Kasım: yapbozsuz +340 puan yakalanmıyordu)
+  const dailies = Math.min(days, puzzles);
+  if (gain > PER_PUZZLE * puzzles + DAILY_EXTRA * dailies + 20) return `yapboz başına fazla: +${gain} puan / ${puzzles} yapboz`;
+  if (gain > BURST + PER_MIN * mins + DAILY_EXTRA * dailies) return `çok hızlı: +${gain} puan / ${Math.round(mins)} dk`;
   return null;
 }
 const cheat = (st, uid) => st.flag[uid] === st.season;
