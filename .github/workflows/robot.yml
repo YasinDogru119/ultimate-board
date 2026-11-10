@@ -5,7 +5,7 @@
 #
 # ZAMANLAMA (10 Kasım 2026): GitHub'ın "schedule" tetikleyicisi bu depoda hiç çalışmadı (19:17–21:17 UTC, yeniden kayıt da
 # işe yaramadı). Bu yüzden robot KENDİNİ ZİNCİRLER: bir çalışma ~5 saat boyunca 10 dakikada bir listeleri yeniler, sonunda kendini
-# yeniden başlatır (workflow_dispatch). "concurrency" aynı anda yalnızca bir robotun çalışmasını sağlar; schedule ileride
+# yeniden başlatır (workflow_dispatch). 10 Kasım: ~6,5 dakikada bir (kullanıcı: "6 yap"). "concurrency" aynı anda yalnızca bir robotun çalışmasını sağlar; schedule ileride
 # çalışmaya başlarsa en fazla bir çalışma sırada bekler, zincir çoğalmaz. Zincir koparsa Actions → robot → Run workflow.
 name: robot
 on:
@@ -27,7 +27,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - name: 10 dakikada bir listeleri yenile (30 tur ≈ 5 saat)
+      - name: ~6,5 dakikada bir listeleri yenile (45 tur ≈ 5 saat)
         env:
           SA_JSON: ${{ secrets.SA_JSON }}
           STATE_KEY: ${{ secrets.STATE_KEY }}
@@ -41,12 +41,12 @@ jobs:
               && git config user.name "board-robot" && git config user.email "board-robot@users.noreply.github.com" \
               && git add -A && git commit -q -m "liste $(date -u +%F' '%H:%M)" && git push -q -f "$PUSH_URL" gh-pages )
           }
-          # 10 Kasım (kullanıcı: "1 saat çok fazla"): 10 dakikada bir. Robot yalnızca değişen oyuncuları okur → okuma artmaz;
-          # GitHub Pages saatte en çok 10 yayın → 6 yayın sınırın altında
-          for i in $(seq 1 30); do
+          # 10 Kasım (kullanıcı: "1 saat çok fazla" → 10 dk → "6 yap"): tur ~1 dk + 330 sn bekleme ≈ 6,5 dk.
+          # Robot yalnızca değişen oyuncuları okur → okuma artmaz. GitHub Pages saatte en çok 10 yayın → ~9 yayın, sınırın altında
+          for i in $(seq 1 45); do
             echo "== tur $i · $(date -u +%H:%M) UTC"
             tur || echo "::warning::tur $i başarısız, bir sonraki turda yeniden denenecek"
-            if [ "$i" -lt 30 ]; then sleep 540; fi
+            if [ "$i" -lt 45 ]; then sleep 330; fi
           done
       - name: Zinciri sürdür (kendini yeniden başlat)
         if: always()
