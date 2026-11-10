@@ -216,14 +216,19 @@ async function main() {
     st.players['fake-bad-name-000000000000'] = { n: 'sikko', c: 'TR', w: st.week, wp: 2900, s: st.season, sp: 3000, lg: 2, pz: 10, t: t0 };   // süzgeç denemesi
   } else {
     rollover(st, t0);                                   // önce: biten dönem arşive (oyuncular yeni döneme geçmeden)
+    // Hile işaretleme kapatıldı: eski işaretlerin hepsi kaldırılır (Yasin True ve ATATÜRK haksız işaretlenmişti).
+    for (const uid of Object.keys(st.flag)) { console.log('işaret kaldırıldı', pidOf(uid)); delete st.flag[uid]; }
     const ps = await changed('players', st.lastT);
     let flagged = 0;
     for (const d of ps) {
       const f = d.f;
       if (typeof f.n !== 'string' || typeof f.w !== 'string') continue;
       const cur = { n: f.n.slice(0, 16), c: /^[A-Z]{2}$/.test(f.c) ? f.c : 'UN', w: f.w, wp: f.wp | 0, s: f.s, sp: f.sp | 0, lg: f.lg | 0, pz: f.pz | 0, t: Date.parse(f.t) };
+      // 10 Kasım 2026 (kullanıcı: "hile falan ekleme, adam oynamış"): hile işaretleme KAPALI. "2'ye katla" bonusu ayrı
+      // gönderimle gelince dürüst oyuncular hileci sayılıyordu. Kontrol yalnızca kayda yazılır; kimse listeden çıkarılmaz.
+      // Temel koruma Firestore kurallarında sürüyor (puan zamana göre en çok 300 + dakikada 40 artabilir).
       const why = suspicious(st.players[d.id], cur, seasonStart(cur.t));
-      if (why && st.flag[d.id] !== cur.s) { st.flag[d.id] = cur.s; flagged++; console.log('şüpheli', pidOf(d.id), why); }
+      if (why) { flagged++; console.log('bilgi (işaretlenmedi)', pidOf(d.id), why); }
       st.players[d.id] = cur;
       note(st, d.id, cur);                              // biten döneme geç gelen puan → arşiv
       if (f.t > st.lastT) st.lastT = f.t;
